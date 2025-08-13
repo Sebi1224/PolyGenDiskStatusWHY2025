@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PolyGen — Current Owners of the Disks</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto; max-width: 980px; margin: 24px auto; padding: 0 18px; color: #111; }
+    header { display: flex; align-items: center; justify-content: space-between; }
+    h1 { font-size: 1.4rem; margin: 0; }
+    .status { font-size: 0.9rem; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { padding: 8px; border-bottom: 1px solid #eee; text-align: left; }
+    th { background: #fafafa; font-weight: 600; }
+    .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px; }
+    .connected { background: #18a558; } .disconnected { background: #d23; }
+    #log { font-family: monospace; background:#111; color:#fff; padding:8px; height:120px; overflow:auto; margin-top:12px; border-radius:6px; font-size:12px;}
+    .team-pink{background:#ffc0cb33} .team-yellow{background:#fffacd99} .team-cyan{background:#e0ffff99} .team-red{background:#ffcccccc}
+    label{font-weight:600; margin-right:8px; user-select:none} select{font-size:1rem; padding:4px 8px; margin-bottom:12px}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>PolyGen — Current Owners of the Disks</h1>
+    <div class="status"><span id="connDot" class="dot disconnected"></span><span id="connText">Connected: no</span></div>
+  </header>
+
+  <label for="teamFilter">Filter by Team:</label>
+  <select id="teamFilter"><option value="">All Teams</option></select>
+
+  <table id="discsTable" aria-live="polite">
+    <thead>
+      <tr>
+        <th>Disc ID</th>
+        <th>Disc Name</th>
+        <th>Owner (Team)</th>
+        <th>Position (x,y)</th>
+        <th>Last Update</th>
+        <th>Last Team-Change</th>
+        <th>Last claimed by</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <div id="log" aria-live="polite"></div>
+
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script>
+  const CANDIDATES = [`ws://YOUR_MQTT_BROKER_IP:9001`];
+  const discs = {};             // discId -> disc data
+  const teams = {};             // teamId -> teamName
+  const players = {};           // playerId -> playerName
+
+  const tableBody = document.querySelector('#discsTable tbody');
+  const logEl = document.getElementById('log');
+  const connDot = document.getElementById('connDot');
+  const connText = document.getElementById('connText');
+  const teamFilterSelect = document.getElementById('teamFilter');
+
+  function log(...args){
+    const msg = `[${new Date().toLocaleTimeString()}] ` + args.map(a => (typeof a==='object'?JSON.stringify(a):String(a))).join(' ');
+    logEl.textContent = msg + '\n' + logEl.textContent;
+  }
+  function escapeHtml(s){ return (s===null||s===undefined)?'':String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function updateConnStatus(connected){
+    connDot.classList.toggle('connected', connected);
+    connDot.classList.toggle('disconnected', !connected);
+    connText.textContent = 'Verbunden: ' + (connected ? 'yes' : 'no');
+  }
+
+  const TEAM_COLORS = {
+    "blackspireconsortium": "team-pink",
+    "chimeratechcorporation": "team-yellow",
+    "malevolantenterprises": "team-cyan",
+    "nothingtoseehereindustries": "team-red"
+  };
+  function normalizeTeamName(name){ return name.toLowerCase().replace(/\s+/g, ''); }
+
+  function populateTeamFilter(){
+    const currentValue = teamFilterSelect.value;
+    while(teamFilterSelect.options.length > 1) teamFilterSelect.remove(1);
+    const uniqueTeams = new Set(Object.values(teams));
+    const sortedTeams = Array.from(uniqueTeams).sort((a,b)=>a.localeCompare(b));
+    for(const t of sortedTeams){ const opt = document.createElement('option'); opt.value=t; opt.textContent=t; teamFilterSelect.appendChild(opt); }
+    if([...teamFilterSelect.options].some(o => o.value===currentValue)) teamFilterSelect.value = currentValue; else teamFilterSelect.value = '';
+  }
+
+  function render(){
+    const filterValue = teamFilterSelect.value.trim();
+    const rows = Object.values(discs)
+      .filter(d => {
+        if(!filterValue) return true;
+        const ownerName = d.ownerteam ? (teams[d.ownerteam] || `Team ${d.ownerteam}`) : '';
+        return ownerName === filterValue;
+      })
+      .sort((a,b) => (b.lastTeamChangeTimestamp || 0) - (a.lastTeamChangeTimestamp || 0));
+
+    tableBody.innerHTML = '';
+    for(const d of rows){
+      const ownerName = d.ownerteam ? (teams[d.ownerteam] || `Team ${d.ownerteam}`) : '— (unowned)';
+      const normalizedName = normalizeTeamName(ownerName);
+      const colorClass = TEAM_COLORS[normalizedName] || '';
+      const lastTeamChangeStr = d.lastTeamChangeTimestamp ? new Date(d.lastTeamChangeTimestamp).toLocaleString() : '—';
+
+      // show the playername from lastClaimerName,
+      // if not possibke, then via players[Id], otherwise —.
+      let lastClaimerDisplay = '—';
+      if(d.lastClaimerName) lastClaimerDisplay = d.lastClaimerName;
+      else if(d.lastClaimerId != null){
+        lastClaimerDisplay = players[d.lastClaimerId] || `Player ${d.lastClaimerId}`;
+      }
+
+      const tr = document.createElement('tr');
+      tr.className = colorClass;
+      tr.innerHTML = `
+        <td>${escapeHtml(d.discid)}</td>
+        <td>${escapeHtml(d.discname || '')}</td>
+        <td>${escapeHtml(ownerName)}</td>
+        <td>${escapeHtml(d.mapx!=null?d.mapx:'')}, ${escapeHtml(d.mapy!=null?d.mapy:'')}</td>
+        <td>${escapeHtml(d.last ? new Date(d.last).toLocaleTimeString() : '')}</td>
+        <td>${escapeHtml(lastTeamChangeStr)}</td>
+        <td>${escapeHtml(lastClaimerDisplay)}</td>
+      `;
+      tableBody.appendChild(tr);
+    }
+  }
+
+  function handleMessage(topic, msg){
+    const now = Date.now();
+    // Hilfswerte robust aus message extrahieren:
+    const maybeTeamId = msg.teamID ?? msg.teamId ?? msg.teamid;
+    const maybePlayerId = msg.playerID ?? msg.playerId ?? msg.playerid;
+    const maybePlayerName = msg.playerName ?? msg.playername ?? msg.name;
+    const maybeDiscId = msg.discID ?? msg.discId ?? msg.discid;
+
+    // --- teams updates ---
+    if(topic.split('/').includes('teams') || topic.endsWith('teams')){
+      const tid = maybeTeamId;
+      if(tid != null){ teams[tid] = msg.teamname || msg.teamName || `Team ${tid}`; populateTeamFilter(); render(); }
+      return;
+    }
+
+    // --- players updates ---
+    // Erkenne topics wie ".../players" oder ".../players/<id>"
+    const parts = topic.split('/');
+    const pIdx = parts.indexOf('players');
+    if(pIdx !== -1){
+      // Wenn msg ist ein Objekt mit playerid als keys (Bulk-Update)
+      if(typeof msg === 'object' && !Array.isArray(msg) && Object.values(msg).every(v => v && v.playerid !== undefined)){
+        // Bulk-Update: msg ist Map von playerid -> PlayerObjekt
+        for(const [pid, pdata] of Object.entries(msg)){
+          players[pid] = pdata.playername || pdata.name || `Player ${pid}`;
+        }
+        render();
+        return;
+      }
+
+      // Sonst einzelnes Player-Update
+      let pid = maybePlayerId;
+      if(pid == null && parts.length > pIdx+1) pid = parts[pIdx+1];
+      if(pid != null){
+        const name = maybePlayerName || msg.player || `Player ${pid}`;
+        players[pid] = name;
+        // rückwirkend: alle Discs, die diese id referenzieren, mit Name versorgen
+        for(const d of Object.values(discs)){
+          if(d.lastClaimerId != null && String(d.lastClaimerId) === String(pid)){
+            d.lastClaimerName = name;
+          }
+        }
+        render();
+      }
+      return;
+    }
+
+    // --- disc online/offline ---
+    if(topic.split('/').includes('discsonline') || topic.endsWith('discsonline')){
+      const id = maybeDiscId;
+      if(id==null) return;
+      discs[id] = Object.assign(discs[id]||{}, {
+        discid: id,
+        discname: msg.discname || msg.discName || discs[id]?.discname,
+        ownerteam: msg.ownerteam ?? msg.teamID ?? discs[id]?.ownerteam,
+        mapx: msg.mapx,
+        mapy: msg.mapy,
+        last: now
+      });
+      render();
+      return;
+    }
+    if(topic.split('/').includes('discsoffline') || topic.endsWith('discsoffline')){
+      const id = maybeDiscId;
+      if(id==null) return;
+      delete discs[id];
+      render();
+      return;
+    }
+
+    // --- capture / discovered / boosted ---
+    if(topic.split('/').some(s => ['disccaptured','discdiscovered','discboosted'].includes(s)) ||
+       /disccaptured$|discdiscovered$|discboosted$/.test(topic)){
+      const did = maybeDiscId;
+      const newTeam = maybeTeamId;
+      const pid = maybePlayerId;
+      if(did != null){
+        if(!discs[did]) discs[did] = {discid: did};
+        if(discs[did].ownerteam !== newTeam){
+          discs[did].ownerteam = newTeam;
+          discs[did].lastTeamChangeTimestamp = now;
+        }
+        discs[did].last = now;
+
+        // Spielerinfo speichern
+        if(maybePlayerName){
+          discs[did].lastClaimerId = pid ?? discs[did].lastClaimerId;
+          discs[did].lastClaimerName = maybePlayerName;
+        } else if(pid != null){
+          discs[did].lastClaimerId = pid;
+          if(players[pid]) discs[did].lastClaimerName = players[pid];
+          else discs[did].lastClaimerName = null;
+        }
+        render();
+      }
+      return;
+    }
+  }
+
+  async function tryConnectSequentially(){
+    for(const url of CANDIDATES){
+      try{ log('Versuche Verbindung zu', url); await connect(url); return; }
+      catch(err){ log('Fehler beim Verbinden zu', url, err && err.message ? err.message : err); }
+    }
+    log('Keine Verbindung gefunden. Läuft der Proxy?');
+  }
+
+  function connect(url){
+    return new Promise((resolve,reject)=>{
+      const clientId = 'web-' + Math.random().toString(16).slice(2,10);
+      const options = {clientId, connectTimeout: 5*1000, keepalive: 30, clean: true};
+      let connected = false;
+      const client = mqtt.connect(url, options);
+
+      client.on('connect', ()=>{
+        connected = true; log('Verbunden mit', url); updateConnStatus(true);
+        client.subscribe('#', err=>{ if(err){ log('Subscribe Fehler:', err.message || err); reject(err); } else resolve(client); });
+      });
+
+      client.on('message', (topic, message)=>{
+        let parsed;
+        try{ parsed = JSON.parse(message.toString()); }
+        catch(e){ log('Ungültige JSON-Nachricht:', message.toString()); return; }
+        //log('recv', topic, parsed);
+        handleMessage(topic, parsed);
+      });
+
+      client.on('error', err=>{ log('MQTT-Fehler:', err.message || err); if(!connected) reject(err); });
+      client.on('close', ()=>{ updateConnStatus(false); log('Verbindung geschlossen'); setTimeout(tryConnectSequentially, 3000); });
+      client.on('offline', ()=>{ updateConnStatus(false); log('MQTT offline'); });
+    });
+  }
+
+  tryConnectSequentially();
+  teamFilterSelect.addEventListener('change', render);
+</script>
+
+</body>
+</html>
+

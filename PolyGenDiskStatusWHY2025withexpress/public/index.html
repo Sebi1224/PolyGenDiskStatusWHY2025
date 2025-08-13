@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PolyGen — Current Owners of the Disks</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto; max-width: 980px; margin: 24px auto; padding: 0 18px; color: #111; }
+    header { display: flex; align-items: center; justify-content: space-between; }
+    h1 { font-size: 1.4rem; margin: 0; }
+    .status { font-size: 0.9rem; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { padding: 8px; border-bottom: 1px solid #eee; text-align: left; }
+    th { background: #fafafa; font-weight: 600; }
+    .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px; }
+    .connected { background: #18a558; } .disconnected { background: #d23; }
+    #log { font-family: monospace; background:#111; color:#fff; padding:8px; height:120px; overflow:auto; margin-top:12px; border-radius:6px; font-size:12px;}
+    .team-pink{background:#ffc0cb33} .team-yellow{background:#fffacd99} .team-cyan{background:#e0ffff99} .team-red{background:#ffcccccc}
+    label{font-weight:600; margin-right:8px; user-select:none} select{font-size:1rem; padding:4px 8px; margin-bottom:12px}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>PolyGen — Current Owners of the Disks</h1>
+    <div class="status"><span id="connDot" class="dot disconnected"></span><span id="connText">Connected: no</span>
+    <br>
+	Shows last saved state.
+    </div>
+  </header>
+
+  <label for="teamFilter">Filter by Team:</label>
+  <select id="teamFilter"><option value="">All Teams</option></select>
+  
+  <table id="discsTable" aria-live="polite">
+    <thead>
+      <tr>
+        <th>Disc ID</th>
+        <th>Disc Name</th>
+        <th>Owner (Team)</th>
+        <th>Position (x,y)</th>
+        <th>Last Update</th>
+        <th>Last Team-Change</th>
+        <th>Last claimed by</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <div id="log" aria-live="polite"></div>
+
+  <script>
+    const discs = {};             // discId -> disc data
+    const teams = {};             // teamId -> teamName
+    const players = {};           // playerId -> playerName
+
+    const tableBody = document.querySelector('#discsTable tbody');
+    const logEl = document.getElementById('log');
+    const connDot = document.getElementById('connDot');
+    const connText = document.getElementById('connText');
+    const teamFilterSelect = document.getElementById('teamFilter');
+
+    function log(...args){
+      const msg = `[${new Date().toLocaleTimeString()}] ` + args.map(a => (typeof a==='object'?JSON.stringify(a):String(a))).join(' ');
+      logEl.textContent = msg + '\n' + logEl.textContent;
+    }
+    function escapeHtml(s){ return (s===null||s===undefined)?'':String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    function updateConnStatus(connected){
+      connDot.classList.toggle('connected', connected);
+      connDot.classList.toggle('disconnected', !connected);
+      connText.textContent = 'Mit Server verbunden: ' + (connected ? 'yes' : 'no');
+    }
+
+    const TEAM_COLORS = {
+      "blackspireconsortium": "team-pink",
+      "chimeratechcorporation": "team-yellow",
+      "malevolantenterprises": "team-cyan",
+      "nothingtoseehereindustries": "team-red"
+    };
+    function normalizeTeamName(name){ return name.toLowerCase().replace(/\s+/g, ''); }
+
+    function populateTeamFilter(){
+      const currentValue = teamFilterSelect.value;
+      while(teamFilterSelect.options.length > 1) teamFilterSelect.remove(1);
+      const uniqueTeams = new Set(Object.values(teams));
+      const sortedTeams = Array.from(uniqueTeams).sort((a,b)=>a.localeCompare(b));
+      for(const t of sortedTeams){ const opt = document.createElement('option'); opt.value=t; opt.textContent=t; teamFilterSelect.appendChild(opt); }
+      if([...teamFilterSelect.options].some(o => o.value===currentValue)) teamFilterSelect.value = currentValue; else teamFilterSelect.value = '';
+    }
+
+    function render(){
+      const filterValue = teamFilterSelect.value.trim();
+      const rows = Object.values(discs)
+        .filter(d => {
+          if(!filterValue) return true;
+          const ownerName = d.ownerteam ? (teams[d.ownerteam] || `Team ${d.ownerteam}`) : '';
+          return ownerName === filterValue;
+        })
+        .sort((a,b) => (b.lastTeamChangeTimestamp || 0) - (a.lastTeamChangeTimestamp || 0));
+
+      tableBody.innerHTML = '';
+      for(const d of rows){
+        const ownerName = d.ownerteam ? (teams[d.ownerteam] || `Team ${d.ownerteam}`) : '— (unowned)';
+        const normalizedName = normalizeTeamName(ownerName);
+        const colorClass = TEAM_COLORS[normalizedName] || '';
+        const lastTeamChangeStr = d.lastTeamChangeTimestamp ? new Date(d.lastTeamChangeTimestamp).toLocaleString() : '—';
+
+        let lastClaimerDisplay = '—';
+        if(d.lastClaimerName) lastClaimerDisplay = d.lastClaimerName;
+        else if(d.lastClaimerId != null){
+          lastClaimerDisplay = players[d.lastClaimerId] || `Player ${d.lastClaimerId}`;
+        }
+
+        const tr = document.createElement('tr');
+        tr.className = colorClass;
+        tr.innerHTML = 
+          `<td>${escapeHtml(d.discid)}</td>` +
+          `<td>${escapeHtml(d.discname || '')}</td>` +
+          `<td>${escapeHtml(ownerName)}</td>` +
+          `<td>${escapeHtml(d.mapx!=null?d.mapx:'')}, ${escapeHtml(d.mapy!=null?d.mapy:'')}</td>` +
+          `<td>${escapeHtml(d.last ? new Date(d.last).toLocaleTimeString() : '')}</td>` +
+          `<td>${escapeHtml(lastTeamChangeStr)}</td>` +
+          `<td>${escapeHtml(lastClaimerDisplay)}</td>`;
+        tableBody.appendChild(tr);
+      }
+    }
+
+    teamFilterSelect.addEventListener('change', render);
+
+    // === Polling for shared state from server every 3 seconds ===
+    async function fetchStateAndUpdate() {
+      try {
+        const res = await fetch('/api/state');
+        if (!res.ok) throw new Error('Network response was not ok');
+        const serverState = await res.json();
+
+        Object.assign(discs, serverState.discs);
+        Object.assign(teams, serverState.teams);
+        Object.assign(players, serverState.players);
+
+        populateTeamFilter();
+        render();
+        updateConnStatus(true)
+      } catch (err) {
+        updateConnStatus(false)
+        log('Error fetching state:', err.message);
+      }
+    }
+
+    // Start polling
+    fetchStateAndUpdate();
+    setInterval(fetchStateAndUpdate, 3000);
+  </script>
+</body>
+</html>
+

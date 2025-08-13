@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PolyGen — Current Owners of the Disks</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto;
+      max-width: 980px;
+      margin: 24px auto;
+      padding: 0 18px;
+      color: #111;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    h1 {
+      font-size: 1.4rem;
+      margin: 0;
+    }
+    .status {
+      font-size: 0.9rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+    }
+    th, td {
+      padding: 8px;
+      border-bottom: 1px solid #eee;
+      text-align: left;
+    }
+    th {
+      background: #fafafa;
+      font-weight: 600;
+    }
+    .muted {
+      color: #666;
+      font-size: 0.9rem;
+    }
+    .dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 8px;
+    }
+    .connected {
+      background: #18a558;
+    }
+    .disconnected {
+      background: #d23;
+    }
+    #log {
+      font-family: monospace;
+      background: #111;
+      color: #fff;
+      padding: 8px;
+      height: 120px;
+      overflow: auto;
+      margin-top: 12px;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    /* Team-Farben */
+    .team-pink {
+      background-color: #ffc0cb33; /* leichtes Pink */
+    }
+    .team-yellow {
+      background-color: #fffacd99; /* hellgelb */
+    }
+    .team-cyan {
+      background-color: #e0ffff99; /* hellcyan */
+    }
+    .team-red {
+      background-color: #ffcccccc; /* hellrot */
+    }
+    label {
+      font-weight: 600;
+      margin-right: 8px;
+      user-select: none;
+    }
+    select {
+      font-size: 1rem;
+      padding: 4px 8px;
+      margin-bottom: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>PolyGen — Current Owners of the Disks</h1>
+    <div class="status"><span id="connDot" class="dot disconnected"></span><span id="connText">Connected: no</span></div>
+  </header>
+
+
+  <label for="teamFilter">Filter by Team:</label>
+  <select id="teamFilter">
+    <option value="">All Teams</option>
+  </select>
+
+  <table id="discsTable" aria-live="polite">
+    <thead>
+      <tr>
+        <th>Disc ID</th>
+        <th>Disc Name</th>
+        <th>Owner (Team)</th>
+        <th>Position (x,y)</th>
+        <th>Last Update</th>
+        <th>Last Team-Change</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <div id="log" aria-live="polite"></div>
+
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script>
+    const CANDIDATES = [
+     `ws://YOUR_MQTT_BROKER_IP:9001` // lokaler Proxy
+    ];
+
+    const discs = {};
+    const teams = {};
+
+    const tableBody = document.querySelector('#discsTable tbody');
+    const logEl = document.getElementById('log');
+    const connDot = document.getElementById('connDot');
+    const connText = document.getElementById('connText');
+    const teamFilterSelect = document.getElementById('teamFilter');
+
+    function log(...args){
+      const msg = `[${new Date().toLocaleTimeString()}] ` + args.map(a => (typeof a==='object'?JSON.stringify(a):String(a))).join(' ');
+      logEl.textContent = msg + '\n' + logEl.textContent;
+    }
+
+    function escapeHtml(s){
+      return (s===null||s===undefined)?'':String(s).replace(/[&<>"']/g,c=>({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+      }[c]));
+    }
+
+    function updateConnStatus(connected){
+      connDot.classList.toggle('connected', connected);
+      connDot.classList.toggle('disconnected', !connected);
+      connText.textContent = 'Verbunden: ' + (connected ? 'yes' : 'no');
+    }
+
+    // Team Colors "normalized" names (lowercase, without space)
+    const TEAM_COLORS = {
+      "blackspireconsortium": "team-pink",
+      "chimeratechcorporation": "team-yellow",
+      "malevolantenterprises": "team-cyan",
+      "nothingtoseehereindustries": "team-red"
+    };
+
+    function normalizeTeamName(name){
+      return name.toLowerCase().replace(/\s+/g, '');
+    }
+
+      function populateTeamFilter(){
+      const currentValue = teamFilterSelect.value;
+      // remove all Options except the first (All Teams)
+      while(teamFilterSelect.options.length > 1){
+        teamFilterSelect.remove(1);
+      }
+
+      const uniqueTeams = new Set(Object.values(teams));
+      const sortedTeams = Array.from(uniqueTeams).sort((a,b) => a.localeCompare(b));
+      for(const t of sortedTeams){
+        const option = document.createElement('option');
+        option.value = t;
+        option.textContent = t;
+        teamFilterSelect.appendChild(option);
+      }
+      // try to set old value if still valid
+      if([...teamFilterSelect.options].some(opt => opt.value === currentValue)){
+        teamFilterSelect.value = currentValue;
+      } else {
+        teamFilterSelect.value = '';
+      }
+    }
+    function render(){
+      const filterValue = teamFilterSelect.value.trim();
+
+      // Sort Discs last Team Change (newest on to) + Filter
+      const rows = Object.values(discs)
+        .filter(d => {
+          if(!filterValue) return true;
+          const ownerName = d.ownerteam ? (teams[d.ownerteam] || `Team ${d.ownerteam}`) : '';
+          return ownerName === filterValue;
+        })
+        .sort((a,b) => {
+          const timeA = a.lastTeamChangeTimestamp || 0;
+          const timeB = b.lastTeamChangeTimestamp || 0;
+          return timeB - timeA;
+        });
+
+      tableBody.innerHTML = '';
+      for(const d of rows){
+        const ownerName = d.ownerteam ? (teams[d.ownerteam] || `Team ${d.ownerteam}`) : '— (unowned)';
+        const normalizedName = normalizeTeamName(ownerName);
+        const colorClass = TEAM_COLORS[normalizedName] || '';
+
+        const lastTeamChangeStr = d.lastTeamChangeTimestamp ? new Date(d.lastTeamChangeTimestamp).toLocaleString() : '—';
+
+        const tr = document.createElement('tr');
+        tr.className = colorClass;
+        tr.innerHTML = `
+          <td>${escapeHtml(d.discid)}</td>
+          <td>${escapeHtml(d.discname || '')}</td>
+          <td>${escapeHtml(ownerName)}</td>
+          <td>${escapeHtml(d.mapx!=null?d.mapx:'')}, ${escapeHtml(d.mapy!=null?d.mapy:'')}</td>
+          <td>${escapeHtml(d.last ? new Date(d.last).toLocaleTimeString() : '')}</td>
+          <td>${escapeHtml(lastTeamChangeStr)}</td>
+        `;
+        tableBody.appendChild(tr);
+      }
+    }
+
+    // Update lastTeamChangeTimestamp bei Besitzerwechsel
+    function handleMessage(topic, msg){
+      const now = Date.now();
+      if(topic.endsWith('teams')){
+        const tid = msg.teamid || msg.teamID;
+        if(tid!=null){
+          teams[tid] = msg.teamname || `Team ${tid}`;
+          populateTeamFilter();
+          render();
+        }
+        return;
+      }
+      if(topic.endsWith('discsonline')){
+        const id = msg.discid || msg.discID;
+        if(id==null) return;
+        discs[id] = Object.assign(discs[id]||{}, {
+          discid: id,
+          discname: msg.discname || discs[id]?.discname,
+          ownerteam: msg.ownerteam,
+          mapx: msg.mapx,
+          mapy: msg.mapy,
+          last: now
+        });
+        render();
+        return;
+      }
+      if(topic.endsWith('discsoffline')){
+        const id = msg.discid || msg.discID;
+        if(id==null) return;
+        delete discs[id];
+        render();
+        return;
+      }
+      if(topic.endsWith('disccaptured') || topic.endsWith('discdiscovered') || topic.endsWith('discboosted')){
+        const did = msg.discID;
+        const newTeam = msg.teamID;
+        if(did!=null){
+          if(!discs[did]) discs[did] = {discid: did};
+          if(discs[did].ownerteam !== newTeam){
+            discs[did].ownerteam = newTeam;
+            discs[did].lastTeamChangeTimestamp = now;
+          }
+          discs[did].last = now;
+          render();
+        }
+      }
+    }
+
+    async function tryConnectSequentially(){
+      for(const url of CANDIDATES){
+        try{
+          log('Versuche Verbindung zu', url);
+          await connect(url);
+          return;
+        }catch(err){
+          log('Fehler beim Verbinden zu', url, err && err.message ? err.message : err);
+        }
+      }
+      log('Keine Verbindung gefunden. Läuft der Proxy?');
+    }
+
+    function connect(url){
+      return new Promise((resolve,reject)=>{
+        const clientId = 'web-' + Math.random().toString(16).slice(2,10);
+        const options = {clientId, connectTimeout: 5*1000, keepalive: 30, clean: true};
+        let connected = false;
+        const client = mqtt.connect(url, options);
+
+        client.on('connect', ()=>{
+          connected = true;
+          log('Verbunden mit', url);
+          updateConnStatus(true);
+          client.subscribe('#', err=>{
+            if(err){
+              log('Subscribe Fehler:', err.message || err);
+              reject(err);
+            }else{
+              resolve(client);
+            }
+          });
+        });
+
+        client.on('message', (topic, message)=>{
+          let parsed;
+          try{
+            parsed = JSON.parse(message.toString());
+          }catch(e){
+            log('Ungültige JSON-Nachricht:', message.toString());
+            return;
+          }
+          handleMessage(topic, parsed);
+        });
+
+        client.on('error', err=>{
+          log('MQTT-Fehler:', err.message || err);
+          if(!connected) reject(err);
+        });
+
+        client.on('close', ()=>{
+          updateConnStatus(false);
+          log('Verbindung geschlossen');
+          // Versuche erneut nach kurzer Pause
+          setTimeout(tryConnectSequentially, 3000);
+        });
+
+        client.on('offline', ()=>{
+          updateConnStatus(false);
+          log('MQTT offline');
+        });
+      });
+    }
+
+    // Initialisierung
+    tryConnectSequentially();
+
+    teamFilterSelect.addEventListener('change', render);
+
+  </script>
+</body>
+</html>
+

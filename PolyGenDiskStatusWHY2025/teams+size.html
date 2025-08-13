@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Players Per Team</title>
+  <style>
+    body { font-family: sans-serif; background: #f7f7f7; padding: 1em; }
+    h1 { color: #333; }
+    ul { list-style-type: none; padding: 0; }
+    li { background: white; margin: 0.3em 0; padding: 0.5em; border-radius: 4px; }
+    .team { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>Players per Team</h1>
+  <ul id="team-list"></ul>
+
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script>
+    const TEAM_NAMES = {
+      1: "Blackspire Consortium (Magentha)",
+      2: "ChimeraTech Corporation (Gelb)",
+      3: "Malevolant Enterprises (Blau)",
+      4: "Nothing To See Here Industries (Rot)"
+    };
+
+    const client = mqtt.connect('ws://151.217.44.197:9001');
+
+    client.on('connect', () => {
+      console.log('Connected to MQTT proxy');
+      client.subscribe('/scoreboard/to/players', err => {
+        if (err) console.error('Subscribe error:', err);
+        else console.log('Subscribed to /scoreboard/to/players');
+      });
+    });
+
+    client.on('message', (topic, payload) => {
+      try {
+        const data = JSON.parse(payload.toString());
+        const counts = {};
+
+        for (const playerId in data) {
+          const player = data[playerId];
+          if (player && typeof player.team !== 'undefined') {
+            counts[player.team] = (counts[player.team] || 0) + 1;
+          }
+        }
+
+        if (Object.keys(counts).length > 0) {
+          updateUI(counts);
+        }
+      } catch (e) {
+        console.error('Failed to parse players message:', e);
+      }
+    });
+
+    function updateUI(counts) {
+      const list = document.getElementById('team-list');
+      list.innerHTML = '';
+      for (const teamId of Object.keys(TEAM_NAMES).sort((a,b) => a-b)) {
+        const count = counts[teamId] || 0;
+        const li = document.createElement('li');
+        li.innerHTML = `<span class="team">${TEAM_NAMES[teamId]}:</span> ${count} player${count !== 1 ? 's' : ''}`;
+        list.appendChild(li);
+      }
+    }
+  </script>
+</body>
+</html>
+
