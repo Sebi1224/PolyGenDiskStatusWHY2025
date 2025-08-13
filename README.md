@@ -14,7 +14,6 @@ This project displays the **current owners of PolyGen Disks** in a real-time HTM
       - Position (x,y)
       - Last Update
       - Last Team Change
-      - Last claimed by
    
     <br>**`DiskOwners(Teams+Player).html`** shows additionally the player name that last captured/discoverd/boosted this disk. <br>
    <br>**`teams+size.html`** shows the current teams and thier size.
