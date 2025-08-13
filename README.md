@@ -79,7 +79,7 @@ For express (only needed for `PolyGenDiskStatusWHY2025withexpress`)
 npm install express
 ````
 
-##Map
+## Map
 The `WHY2025Map.png` can be used to find all the Disks via x and y coordinates (Pixel).[^1]
 [^1]: This is not the original map but quite close in the dimensions and map excerpt.
 
