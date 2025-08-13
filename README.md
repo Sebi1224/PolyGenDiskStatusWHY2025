@@ -91,6 +91,7 @@ The `WHY2025Map.png` can be used to find all the Disks via x and y coordinates (
 <br>WHY2025: https://why2025.org/
 <br>MQTT Doku: https://gen.polyb.io/posts/DataFeed/
 <br>Github Project of the Game: https://github.com/Trikkitt/polygen
+<br>Thank you @Trikkitt for this awesome game!
 
 ## License
 MIT License – Feel free to use and modify this project.
